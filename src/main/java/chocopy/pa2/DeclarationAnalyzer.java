@@ -2,13 +2,13 @@ package chocopy.pa2;
 
 import chocopy.common.analysis.AbstractNodeAnalyzer;
 import chocopy.common.analysis.SymbolTable;
+import chocopy.common.analysis.types.ClassValueType;
+import chocopy.common.analysis.types.FuncType;
 import chocopy.common.analysis.types.Type;
 import chocopy.common.analysis.types.ValueType;
-import chocopy.common.astnodes.Declaration;
-import chocopy.common.astnodes.Errors;
-import chocopy.common.astnodes.Identifier;
-import chocopy.common.astnodes.Program;
-import chocopy.common.astnodes.VarDef;
+import chocopy.common.astnodes.*;
+
+import java.util.*;
 
 /**
  * Analyzes declarations to create a top-level symbol table.
@@ -60,6 +60,25 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
     @Override
     public Type analyze(VarDef varDef) {
         return ValueType.annotationToValueType(varDef.var.type);
+    }
+
+    @Override
+    public Type analyze(FuncDef f) {
+        // 1. 列表必须是 List<ValueType>
+        List<ValueType> paramTypes = new ArrayList<>();
+        for (TypedVar param : f.params) {
+            paramTypes.add(ValueType.annotationToValueType(param.type));
+        }
+
+        // 2. 【核心修正点】：把 Type returnType 改为 ValueType returnType
+        // 因为 ValueType.annotationToValueType 返回的就是 ValueType
+        // 如果你声明为 Type，Java 就不会让你把它传给要求 ValueType 的 FuncType 构造函数
+        ValueType returnType = ValueType.annotationToValueType(f.returnType);
+
+        // 3. 这样两边就都匹配上了
+        FuncType funcType = new FuncType(paramTypes, returnType);
+
+        return funcType;
     }
 
 
