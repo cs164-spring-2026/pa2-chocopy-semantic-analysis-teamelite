@@ -2,9 +2,7 @@ package chocopy.pa2;
 
 import chocopy.common.analysis.types.*;
 import java.util.*;
-
 public class ClassHierarchy {
-
     public static class ClassInfo {
         public final String name;
         public final String superName;
@@ -21,9 +19,9 @@ public class ClassHierarchy {
 
     public ClassHierarchy() {
         classes.put("object", new ClassInfo("object", null));
-        classes.put("int",    new ClassInfo("int", "object"));
-        classes.put("bool",   new ClassInfo("bool", "object"));
-        classes.put("str",    new ClassInfo("str", "object"));
+        classes.put("int", new ClassInfo("int", "object"));
+        classes.put("bool", new ClassInfo("bool", "object"));
+        classes.put("str", new ClassInfo("str", "object"));
     }
 
     public boolean classExists(String name) { return classes.containsKey(name); }
@@ -55,64 +53,109 @@ public class ClassHierarchy {
     public String lcaClass(String a, String b) {
         if (a == null || b == null) return "object";
         if (a.equals(b)) return a;
+
         List<String> chainA = ancestorChain(a);
+
         Set<String> visited = new HashSet<>();
+
         String cur = b;
+
         while (cur != null && !visited.contains(cur)) {
+
             if (chainA.contains(cur)) return cur;
+
             visited.add(cur);
+
             ClassInfo info = classes.get(cur);
+
             cur = (info != null) ? info.superName : null;
+
         }
+
         return "object";
+
     }
 
     private List<String> ancestorChain(String className) {
+
         List<String> chain = new ArrayList<>();
+
         Set<String> visited = new HashSet<>();
+
         String cur = className;
+
         while (cur != null && !visited.contains(cur)) {
+
             chain.add(cur);
+
             visited.add(cur);
+
             ClassInfo info = classes.get(cur);
+
             cur = (info != null) ? info.superName : null;
+
         }
+
         return chain;
+
     }
 
     public boolean isSubtypeOf(ValueType actual, ValueType expected) {
+
         if (actual == null || expected == null) return false;
+
         if (actual.equals(expected)) return true;
+
         if (isObjectType(expected)) return true;
 
         String ac = getClassName(actual);
+
         String ec = getClassName(expected);
 
         if ("<None>".equals(ac)) {
+
             if (expected instanceof ListValueType) return true;
+
             if (ec != null) return !ec.equals("int") && !ec.equals("bool") && !ec.equals("str");
+
             return false;
+
         }
+
         if ("<Empty>".equals(ac) && expected instanceof ListValueType) return true;
 
         if (actual instanceof ListValueType && expected instanceof ListValueType) {
+
             if (actual.equals(expected)) return true;
+
             ValueType actElem = ((ListValueType) actual).elementType;
+
             ValueType expElem = ((ListValueType) expected).elementType;
+
             String actElemName = getClassName(actElem);
+
             if ("<None>".equals(actElemName) || "<Empty>".equals(actElemName)) {
+
                 return isSubtypeOf(actElem, expElem);
+
             }
+
             return false;
+
         }
 
         if (ac != null && ec != null) return isSubclass(ac, ec);
+
         return false;
+
     }
 
     public ValueType join(ValueType t1, ValueType t2) {
+
         if (t1 == null) return t2;
+
         if (t2 == null) return t1;
+
         if (t1.equals(t2)) return t1;
 
         if (t1 instanceof ListValueType && t2 instanceof ListValueType) {
@@ -129,8 +172,8 @@ public class ClassHierarchy {
 
         String c1 = getClassName(t1);
         String c2 = getClassName(t2);
-        boolean t1None  = "<None>".equals(c1);
-        boolean t2None  = "<None>".equals(c2);
+        boolean t1None = "<None>".equals(c1);
+        boolean t2None = "<None>".equals(c2);
         boolean t1Empty = "<Empty>".equals(c1);
         boolean t2Empty = "<Empty>".equals(c2);
 
@@ -150,7 +193,7 @@ public class ClassHierarchy {
         return (t instanceof ClassValueType) && "object".equals(getClassName(t));
     }
 
-    // 关键修复：绝对安全地获取真实类名，防止 toString() 捣乱
+// 关键修复：绝对安全地获取真实类名，防止 toString() 捣乱
     public String getClassName(ValueType t) {
         if (t instanceof ClassValueType) return t.toString();
         return null;

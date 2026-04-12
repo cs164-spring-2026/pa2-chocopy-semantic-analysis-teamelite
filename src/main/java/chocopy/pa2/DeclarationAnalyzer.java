@@ -17,6 +17,7 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
     private final Deque<SymbolTable<Type>> funcScopeStack = new ArrayDeque<>();
     private String currentClassName = null;
     private boolean insideFunction = false;
+    private Type expectedReturnType = null;
 
     public DeclarationAnalyzer(Errors errors, ClassHierarchy hierarchy) {
         this.errors = errors;
@@ -39,10 +40,17 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
 
     @Override
     public Type analyze(Program program) {
+        // 第一个循环：安全的 Class 注册
         for (Declaration decl : program.declarations) {
             if (decl instanceof ClassDef) {
                 ClassDef cd = (ClassDef) decl;
-                hierarchy.addClass(cd.name.name, cd.superClass.name);
+                String className = cd.name.name;
+                // 如果已经存在同名类或者和内置类型重名，直接报错并跳过注册
+                if (hierarchy.classExists(className)) {
+                    errors.semError(cd.name, "Duplicate declaration of identifier in same scope: %s", className);
+                } else {
+                    hierarchy.addClass(className, cd.superClass.name);
+                }
             }
         }
 
@@ -234,6 +242,7 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
         sym = new SymbolTable<>(sym);
         funcScopeStack.push(sym);
 
+        // 1. 注册参数
         Set<String> paramNames = new HashSet<>();
         for (TypedVar param : fd.params) {
             String pName = param.identifier.name;
@@ -246,33 +255,36 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
             }
         }
 
+        // 2. Pass 1: 收集当前层级的所有声明，并执行严格查重！
         for (Declaration decl : fd.declarations) {
-            if (decl instanceof GlobalDecl) {
-                String vName = ((GlobalDecl) decl).variable.name;
-                if (!globals.declares(vName)) errors.semError(((GlobalDecl) decl).variable, "Not a global variable: %s", vName);
-                else sym.put(vName, globals.get(vName));
-            } else if (decl instanceof NonLocalDecl) {
-                String vName = ((NonLocalDecl) decl).variable.name;
-                Type outerType = findNonlocalVar(vName);
-                if (outerType == null) errors.semError(((NonLocalDecl) decl).variable, "Not a nonlocal variable: %s", vName);
-                else sym.put(vName, outerType);
-            }
-        }
+            Identifier id = decl.getIdentifier();
+            String name = id.name;
 
-        for (Declaration decl : fd.declarations) {
-            if (decl instanceof GlobalDecl || decl instanceof NonLocalDecl) continue;
-            Identifier id   = decl.getIdentifier();
-            String     name = id.name;
-
+            // 【核心修复1】：统一拦截所有的重名错误（无论是 global, nonlocal, 还是普通变量和函数）
             if (sym.declares(name)) {
                 errors.semError(id, "Duplicate declaration of identifier in same scope: %s", name);
-                if (decl instanceof FuncDef) processFuncBody((FuncDef) decl, null);
-                continue;
+                continue; // 跳过，防止错误声明覆盖合法的参数或变量
             }
 
-            if (!(decl instanceof ClassDef) && hierarchy.classExists(name)) errors.semError(id, "Cannot shadow class name: %s", name);
+            if (!(decl instanceof ClassDef) && hierarchy.classExists(name)) {
+                errors.semError(id, "Cannot shadow class name: %s", name);
+            }
 
-            if (decl instanceof VarDef) {
+            if (decl instanceof GlobalDecl) {
+                if (!globals.declares(name)) {
+                    errors.semError(id, "Not a global variable: %s", name);
+                } else {
+                    sym.put(name, globals.get(name));
+                }
+            } else if (decl instanceof NonLocalDecl) {
+                // 【核心修复2】：findNonlocalVar 查找时，外层函数的符号表已经收集完全，不再惧怕前向引用
+                Type outerType = findNonlocalVar(name);
+                if (outerType == null) {
+                    errors.semError(id, "Not a nonlocal variable: %s", name);
+                } else {
+                    sym.put(name, outerType);
+                }
+            } else if (decl instanceof VarDef) {
                 checkTypeAnnotation(((VarDef) decl).var.type);
                 sym.put(name, ValueType.annotationToValueType(((VarDef) decl).var.type));
             } else if (decl instanceof FuncDef) {
@@ -280,15 +292,23 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
                 List<ValueType> nParams = new ArrayList<>();
                 for (TypedVar p : nested.params) nParams.add(ValueType.annotationToValueType(p.type));
                 sym.put(name, new FuncType(nParams, getSafeReturnType(nested.returnType)));
-                processFuncBody(nested, null);
             }
         }
 
-        ValueType declaredRet = getSafeReturnType(fd.returnType);
-        if (!isSafeNoneType(declaredRet) && !allPathsReturn(fd.statements)) {
-            errors.semError(fd.name, "All paths in this function must have a return statement: %s", fd.name.name);
+        // 3. Pass 2: 等当前层级符号表就绪后，再深入嵌套函数的内部进行推导
+        for (Declaration decl : fd.declarations) {
+            if (decl instanceof FuncDef) {
+                processFuncBody((FuncDef) decl, null);
+            }
         }
 
+        // 4. 返回值验证
+        ValueType declaredRet = getSafeReturnType(fd.returnType);
+        if (!isSafeNoneType(declaredRet) && !allPathsReturn(fd.statements)) {
+            errors.semError(fd.name, "All paths in this function/method must have a return statement: %s", fd.name.name);
+        }
+
+        // 5. 语句分析
         for (Stmt stmt : fd.statements) stmt.dispatch(this);
 
         funcScopeStack.pop();
@@ -305,14 +325,18 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
         return null;
     }
 
-    // 修复：严格只检查代码块的最后一条语句！
+    // 修复：只要语句列表中有任何一条语句满足返回条件即可
     private boolean allPathsReturn(List<Stmt> stmts) {
         if (stmts == null || stmts.isEmpty()) return false;
-        Stmt last = stmts.get(stmts.size() - 1);
-        if (last instanceof ReturnStmt) return true;
-        if (last instanceof IfStmt) {
-            IfStmt ifS = (IfStmt) last;
-            return !ifS.elseBody.isEmpty() && allPathsReturn(ifS.thenBody) && allPathsReturn(ifS.elseBody);
+        for (Stmt stmt : stmts) {
+            if (stmt instanceof ReturnStmt) return true;
+            if (stmt instanceof IfStmt) {
+                IfStmt ifS = (IfStmt) stmt;
+                // 如果 if 的两个分支都能保证返回，那么整个语句块也保证返回
+                if (allPathsReturn(ifS.thenBody) && allPathsReturn(ifS.elseBody)) {
+                    return true;
+                }
+            }
         }
         return false;
     }

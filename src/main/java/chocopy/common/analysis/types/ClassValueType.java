@@ -10,7 +10,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 public class ClassValueType extends ValueType {
 
     /** The name of the class. */
-    private final String className;
+    public final String className;
 
     /** A class type for the class named CLASSNAME. */
     @JsonCreator
