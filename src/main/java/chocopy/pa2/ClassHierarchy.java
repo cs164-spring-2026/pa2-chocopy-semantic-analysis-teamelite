@@ -22,7 +22,7 @@ public class ClassHierarchy {
     public ClassHierarchy() {
         classes.put("object", new ClassInfo("object", null));
         classes.put("int",    new ClassInfo("int", "object"));
-        classes.put("bool",   new ClassInfo("bool", "int"));
+        classes.put("bool",   new ClassInfo("bool", "object"));
         classes.put("str",    new ClassInfo("str", "object"));
     }
 

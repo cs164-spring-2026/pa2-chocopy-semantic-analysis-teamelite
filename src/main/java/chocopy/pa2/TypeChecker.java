@@ -154,7 +154,21 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
                     }
                 }
             } else if (target instanceof MemberExpr || target instanceof IndexExpr) {
+                // 先派发，这会顺便推导出 target 内部各个子节点（比如 index 和 list）的 inferredType
                 Type targetType = target.dispatch(this);
+
+                // 🚨 新增：专门拦截非法的索引赋值行为 (例如 x[0] = y)
+                if (target instanceof IndexExpr) {
+                    IndexExpr idxTarget = (IndexExpr) target;
+                    Type baseType = idxTarget.list.getInferredType();
+
+                    // 如果 baseType 不是列表类型 (比如是 str)，则报错
+                    if (!(baseType instanceof ListValueType)) {
+                        err(idxTarget, "`%s` is not a list type", baseType);
+                    }
+                }
+
+                // 原有的类型兼容性检查逻辑保持不变
                 if (firstConformanceError == null && targetType != null && !conforms(valueType, targetType)) {
                     firstConformanceError = String.format("Expected type `%s`; got type `%s`", targetType, valueType);
                 }
@@ -266,23 +280,24 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
                 return e.setInferredType(Type.INT_TYPE);
 
             case "+":
+                // 1. 合法情况：整型相加
                 if (isIntType(t1) && isIntType(t2)) return e.setInferredType(Type.INT_TYPE);
+
+                // 2. 合法情况：字符串相加
                 if (isStrType(t1) && isStrType(t2)) return e.setInferredType(Type.STR_TYPE);
 
-                boolean t1Empty = "<Empty>".equals(className(t1));
-                boolean t2Empty = "<Empty>".equals(className(t2));
-
+                // 3. 合法情况：明确的列表类型相加 (不包含 <Empty>)
                 if (t1 instanceof ListValueType && t2 instanceof ListValueType) {
-                    if (t1.equals(t2)) return e.setInferredType(t1);
-                } else if (t1 instanceof ListValueType && t2Empty) {
-                    return e.setInferredType(t1);
-                } else if (t2 instanceof ListValueType && t1Empty) {
-                    return e.setInferredType(t2);
-                } else if (t1Empty && t2Empty) {
-                    return e.setInferredType(new ClassValueType("<Empty>"));
+                    ValueType elemType1 = ((ListValueType) t1).elementType;
+                    ValueType elemType2 = ((ListValueType) t2).elementType;
+                    ValueType lcaType = hierarchy.join(elemType1, elemType2);
+                    return e.setInferredType(new ListValueType(lcaType));
                 }
 
+                // 4. 报错：以上全不符合，抛出类型错误
                 err(e, "Cannot apply operator `%s` on types `%s` and `%s`", e.operator, t1, t2);
+
+                // 5. 错误恢复：如果有一边是 int，兜底推导为 int；否则兜底为 object
                 if (isIntType(t1) || isIntType(t2)) return e.setInferredType(Type.INT_TYPE);
                 return e.setInferredType(Type.OBJECT_TYPE);
 
@@ -348,12 +363,16 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
         Type listType  = e.list.dispatch(this);
         Type indexType = e.index.dispatch(this);
 
-        if (!isIntType(indexType)) err(e.index, "Index is of non-integer type `%s`", indexType);
+        // 【修改】：把错误绑定到整个 IndexExpr 节点 e 上
+        if (!isIntType(indexType)) {
+            err(e, "Index is of non-integer type `%s`", indexType);
+        }
 
         if (listType instanceof ListValueType) return e.setInferredType(((ListValueType) listType).elementType);
         if (isStrType(listType)) return e.setInferredType(Type.STR_TYPE);
 
-        err(e.list, "Cannot index into type `%s`", listType);
+        // 【修改】：同样把错误绑定到整个 e 上
+        err(e, "Cannot index into type `%s`", listType);
         return e.setInferredType(Type.OBJECT_TYPE);
     }
 
