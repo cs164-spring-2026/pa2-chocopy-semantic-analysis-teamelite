@@ -68,17 +68,9 @@ To sync with updates upstream:
 
 ## Submission writeup
 
-Team member 1: Yuyang Wang
+Team member 1:
 
-Team member 2: Haoyu Yao (Julius Valerius)
+Team member 2:
 
-Acknowledgements: We would like to give credit to Gemini for helping us debug.
 
-Late hours consumed: 0
-
-Question 1: 
-
-Question 2:
-
-Question 3:
 
