@@ -83,25 +83,10 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
         Type declaredType = ValueType.annotationToValueType(varDef.var.type);
         Type valueType = varDef.value.dispatch(this);
 
-        // 获取当前定义的变量名
-        String varName = varDef.var.identifier.name;
-
-        // --- 👇 新增：类的属性继承检查 👇 ---
-        // currentClassName 应该是在你的类分析器进入 ClassDef 时设置的变量
-        if (currentClassName != null) {
-            // 使用你已经在 ClassHierarchy 里写好的方法，检查父类是否已经有同名的属性或方法了
-            if (hierarchy.isInherited(currentClassName, varName)) {
-                // 🚨 报错必须挂在这个标识符(Identifier)上
-                err(varDef.var.identifier, "Cannot override attribute: %s", varName);
-            }
-        }
-        // --- 👆 新增结束 👆 ---
-
-        // 原来的类型一致性检查
+        // 只保留类型一致性检查，删掉属性继承检查 (Rule 5 已经在 Pass 1 检查过了)
         if (!conforms(valueType, declaredType)) {
-            // 🚨 关键修复1：错误必须挂在 varDef (整个声明) 上，而不是 varDef.value 上！
-            // 🚨 关键修复2：确认反引号 `%s` 加上了！
-            err(varDef, "Expected type `%s`; got type `%s`", declaredType.className(), valueType.className());
+            err(varDef, "Expected type `%s`; got type `%s`",
+                    declaredType.className(), valueType.className());
         }
 
         return null;
@@ -117,36 +102,18 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
 
     }
 
-
-
     @Override
     public Type analyze(FuncDef funcDef) {
         ValueType oldReturnType = currentReturnType;
-        String oldClassName = currentClassName; // 保存进入函数前的类名
+        String oldClassName = currentClassName;
         currentReturnType = getSafeReturnType(funcDef.returnType);
 
-        // --- 👇 面向对象专属检查 (Method Checks) 👇 ---
-        if (oldClassName != null) {
-            // 1. 检查 self 参数：必须有参数，且第一个参数必须是当前类
-            if (funcDef.params.isEmpty()) {
-                err(funcDef.name, "First parameter of the following method must be of the enclosing class: %s", funcDef.name.name);
-            } else {
-                ValueType firstParamType = ValueType.annotationToValueType(funcDef.params.get(0).type);
-                if (!firstParamType.className().equals(oldClassName)) {
-                    err(funcDef.name, "First parameter of the following method must be of the enclosing class: %s", funcDef.name.name);
-                }
-            }
-
-            // 2. 真正执行方法重写(Override)签名检查！
-            checkMethodOverride(funcDef, oldClassName);
-        }
-        // --- 👆 面向对象检查结束 👆 ---
+        // --- 删掉了所有关于 Self 参数和方法重写的检查 (Rule 6, 7 已在 Pass 1 处理) ---
 
         SymbolTable<Type> outerSym = sym;
         sym = new SymbolTable<>(sym);
 
-        // 🚨🚨🚨 【极其重要】：进入函数内部后，作用域不再直接属于类！
-        // 必须清空 currentClassName，防止内部的嵌套函数被误判为类方法！
+        // 进入函数内部，暂时脱离类的上下文
         currentClassName = null;
 
         for (TypedVar param : funcDef.params) {
@@ -154,82 +121,16 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
         }
         processLocalDeclarations(funcDef.declarations);
 
-        // 正常遍历所有的 statements
         for (Stmt stmt : funcDef.statements) {
             stmt.dispatch(this);
         }
 
-        // --- 👇 终极修复点：基于 AST 的返回值控制流检查 👇 ---
-        boolean needsReturn = true;
-
-        // 直接从 AST 语法树节点获取声明的返回类型（绝对不会抛出 NoSuchFieldError）
-        if (funcDef.returnType instanceof chocopy.common.astnodes.ClassType) {
-            String declaredTypeName = ((chocopy.common.astnodes.ClassType) funcDef.returnType).className;
-
-            // 如果声明的是 <None> 或者 object，就不强制要求 return
-            if ("<None>".equals(declaredTypeName) || "object".equals(declaredTypeName)) {
-                needsReturn = false;
-            }
-        } else if (funcDef.returnType == null) {
-            needsReturn = false;
-        }
-
-        // 检查是否缺少 return
-        if (needsReturn && !hasReturn(funcDef.statements)) {
-            err(funcDef.name, "All paths in this function/method must have a return statement: %s", funcDef.name.name);
-        }
-        // --- 👆 修改结束 👆 ---
+        // --- 删掉了关于缺少 return 的路径检查 (Rule 9 已在 Pass 1 处理) ---
 
         sym = outerSym;
         currentReturnType = oldReturnType;
-        currentClassName = oldClassName; // 退出函数时，恢复类的上下文
+        currentClassName = oldClassName;
         return null;
-    }
-
-    // 这是一个标准的重写检查逻辑参考
-    public void checkMethodOverride(FuncDef funcDef, String currentClassName) {
-        String methodName = funcDef.name.name;
-        // 1. 获取父类名字
-        String superClassName = hierarchy.getSuperName(currentClassName);
-
-        // 2. 沿着父类链向上找，看看有没有同名方法
-        // (假设你有一个方法能从父类链中找到被覆盖的方法类型)
-        FuncType superMethodType = hierarchy.getMethod(superClassName, methodName);
-
-        if (superMethodType != null) {
-            // 找到了！说明这是一个重写(Override)，必须严格检查签名
-            boolean isSignatureMatch = true;
-
-            // 检查参数个数是否一致
-            if (funcDef.params.size() != superMethodType.parameters.size()) {
-                isSignatureMatch = false;
-            } else {
-                // 参数个数一致的话，逐个比对类型（跳过第0个 self 参数）
-                for (int i = 1; i < funcDef.params.size(); i++) {
-                    ValueType currentParamType = ValueType.annotationToValueType(funcDef.params.get(i).type);
-                    ValueType superParamType = superMethodType.parameters.get(i);
-
-                    // 类型名称必须完全一样
-                    if (!currentParamType.className().equals(superParamType.className())) {
-                        isSignatureMatch = false;
-                        break;
-                    }
-                }
-
-                // 检查返回值类型是否完全一样
-                ValueType currentReturnType = getSafeReturnType(funcDef.returnType);
-                ValueType superRetType = superMethodType.returnType;
-                // 注意这里也要防空指针并严格比对
-                if (!currentReturnType.className().equals(superRetType.className())) {
-                    isSignatureMatch = false;
-                }
-            }
-
-            // 如果有任何不一致，立刻抛出经典报错！
-            if (!isSignatureMatch) {
-                err(funcDef.name, "Method overridden with different type signature: %s", methodName);
-            }
-        }
     }
 
     @Override
@@ -934,111 +835,48 @@ public class TypeChecker extends AbstractNodeAnalyzer<Type> {
         err(e, "Not a function or class: %s", funcName);
         return e.setInferredType(Type.OBJECT_TYPE);
     }
+
     @Override
-
     public Type analyze(MethodCallExpr e) {
-
         Type objectType = e.method.object.dispatch(this);
-
         String methodName = e.method.member.name;
 
-
-
         String cn = className(objectType);
-
         if (cn == null) {
-
-// 🐛 修复：去掉了反引号
-
-            err(e.method, "Cannot call method %s on non-class type %s", methodName, objectType);
-
+            // 修复：加上反引号
+            err(e.method, "Cannot call method `%s` on non-class type `%s`", methodName, objectType);
             for (Expr arg : e.args) arg.dispatch(this);
-
             e.method.setInferredType(Type.OBJECT_TYPE);
-
             return e.setInferredType(Type.OBJECT_TYPE);
-
         }
-
-
 
         FuncType funcType = hierarchy.getMethod(cn, methodName);
-
         if (funcType == null) {
-
-            err(e.method, "There is no method named %s in class %s", methodName, cn);
-
+            // 修复：加上反引号
+            err(e.method, "There is no method named `%s` in class `%s`", methodName, cn);
             for (Expr arg : e.args) arg.dispatch(this);
-
             e.method.setInferredType(Type.OBJECT_TYPE);
-
             return e.setInferredType(Type.OBJECT_TYPE);
-
         }
-
-
 
         e.method.setInferredType(funcType);
-
         int expectedArgs = funcType.parameters.size() - 1;
-
         if (e.args.size() != expectedArgs) {
-
             err(e, "Expected %d arguments; got %d", expectedArgs, e.args.size());
-
             for (Expr arg : e.args) arg.dispatch(this);
-
             return e.setInferredType(funcType.returnType);
-
         }
-
-
 
         for (int i = 0; i < e.args.size(); i++) {
-
             Type argType = e.args.get(i).dispatch(this);
-
             ValueType expType = funcType.parameters.get(i + 1);
-
             if (!conforms(argType, expType)) {
-
-                err(e.args.get(i), "Expected type %s; got type %s", expType, argType);
-
+                err(e, "Expected type `%s`; got type `%s` in parameter %d", expType, argType, i + 1);
             }
-
         }
-
-
 
         return e.setInferredType(funcType.returnType);
-
     }
 
-    // 检查语句列表是否在所有路径上都有 return
-    private boolean hasReturn(List<Stmt> statements) {
-        if (statements == null || statements.isEmpty()) {
-            return false;
-        }
-
-        // 遍历当前块里的所有语句
-        for (Stmt stmt : statements) {
-            // 1. 如果直接遇到了 return 语句，整个块都算作有 return
-            if (stmt instanceof ReturnStmt) {
-                return true;
-            }
-
-            // 2. 如果遇到了 if 语句，检查它的两个分支
-            if (stmt instanceof IfStmt) {
-                IfStmt ifStmt = (IfStmt) stmt;
-                // 只有当 then 分支和 else 分支都保证有 return 时，这个 if 语句才算是一个 return 路径
-                if (hasReturn(ifStmt.thenBody) && hasReturn(ifStmt.elseBody)) {
-                    return true;
-                }
-            }
-            // 注意：WhileStmt 和 ForStmt 里的 return 不算数，所以直接忽略，继续往下看
-        }
-
-        return false;
-    }
 
 }

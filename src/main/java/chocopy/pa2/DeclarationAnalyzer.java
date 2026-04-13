@@ -288,31 +288,33 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
             }
         }
 
-        // 2. Pass 1: 收集当前层级的所有声明，并执行严格查重！
+        // 2. Pass 1: 收集当前层级的所有声明
         for (Declaration decl : fd.declarations) {
             Identifier id = decl.getIdentifier();
             String name = id.name;
 
-            // 【核心修复1】：统一拦截所有的重名错误（无论是 global, nonlocal, 还是普通变量和函数）
             if (sym.declares(name)) {
                 errors.semError(id, "Duplicate declaration of identifier in same scope: %s", name);
-                continue; // 跳过，防止错误声明覆盖合法的参数或变量
+                continue;
             }
 
-            if (!(decl instanceof ClassDef) && hierarchy.classExists(name)) {
+            // 修复 1：只有普通的变量定义和函数定义才需要检查“是否遮蔽了类名”
+            if ((decl instanceof VarDef || decl instanceof FuncDef) && hierarchy.classExists(name)) {
                 errors.semError(id, "Cannot shadow class name: %s", name);
             }
 
             if (decl instanceof GlobalDecl) {
-                if (!globals.declares(name)) {
+                Type t = globals.get(name);
+                // 修复 2：如果找不到，或者找到的是个函数/类（它们在符号表里都是 FuncType），则报错
+                if (t == null || t instanceof FuncType) {
                     errors.semError(id, "Not a global variable: %s", name);
                 } else {
-                    sym.put(name, globals.get(name));
+                    sym.put(name, t);
                 }
             } else if (decl instanceof NonLocalDecl) {
-                // 【核心修复2】：findNonlocalVar 查找时，外层函数的符号表已经收集完全，不再惧怕前向引用
                 Type outerType = findNonlocalVar(name);
-                if (outerType == null) {
+                // 修复 2：同理，nonlocal 也必须指向普通变量，不能是函数/类
+                if (outerType == null || outerType instanceof FuncType) {
                     errors.semError(id, "Not a nonlocal variable: %s", name);
                 } else {
                     sym.put(name, outerType);
@@ -337,7 +339,10 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
 
         // 4. 返回值验证
         ValueType declaredRet = getSafeReturnType(fd.returnType);
-        if (!isSafeNoneType(declaredRet) && !allPathsReturn(fd.statements)) {
+        String retName = declaredRet.toString(); // 这里的 toString() 通常返回类名
+
+        // 核心修复：如果返回类型不是 <None> 且不是 object，才强制要求所有路径都有 return
+        if (!retName.equals("<None>") && !retName.equals("object") && !allPathsReturn(fd.statements)) {
             errors.semError(fd.name, "All paths in this function/method must have a return statement: %s", fd.name.name);
         }
 
