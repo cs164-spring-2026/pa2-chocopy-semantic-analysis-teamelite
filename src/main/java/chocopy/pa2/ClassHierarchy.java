@@ -18,7 +18,19 @@ public class ClassHierarchy {
     private final Map<String, ClassInfo> classes = new LinkedHashMap<>();
 
     public ClassHierarchy() {
-        classes.put("object", new ClassInfo("object", null));
+        // 1. 创建 object 的 ClassInfo
+        ClassInfo objectInfo = new ClassInfo("object", null);
+
+        // 2. 为 object 预置 __init__ 方法
+        // 签名: (object) -> <None>
+        List<ValueType> initParams = Collections.singletonList(new ClassValueType("object"));
+        FuncType initType = new FuncType(initParams, new ClassValueType("<None>"));
+        objectInfo.methods.put("__init__", initType);
+
+        // 3. 放入 map
+        classes.put("object", objectInfo);
+
+        // 其他基础类型
         classes.put("int", new ClassInfo("int", "object"));
         classes.put("bool", new ClassInfo("bool", "object"));
         classes.put("str", new ClassInfo("str", "object"));

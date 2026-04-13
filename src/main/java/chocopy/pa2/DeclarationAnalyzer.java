@@ -60,8 +60,29 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
 
             if (decl instanceof ClassDef) {
                 ClassDef cd = (ClassDef) decl;
-                if (!isValidSuperclass(cd.superClass.name)) {
-                    errors.semError(cd.superClass, "Invalid base class: %s", cd.superClass.name);
+                String superName = cd.superClass.name;
+
+                if (superName.equals("int") || superName.equals("bool") || superName.equals("str")) {
+                    // 1. 继承不能继承的特殊类型
+                    errors.semError(cd.superClass, "Cannot extend special class: %s", superName);
+                } else if (!superName.equals("object")) {
+                    // 2 & 3. 递归检查父类是否完全合法
+                    if (!isSuperClassValid(program, superName, new HashSet<>())) {
+                        // 如果不合法，我们要区分它是 "非类变量" 还是 "未定义"
+                        boolean isNonClass = false;
+                        for (Declaration globalD : program.declarations) {
+                            if (!(globalD instanceof ClassDef) && globalD.getIdentifier().name.equals(superName)) {
+                                isNonClass = true;
+                                break;
+                            }
+                        }
+
+                        if (isNonClass) {
+                            errors.semError(cd.superClass, "Super-class must be a class: %s", superName);
+                        } else {
+                            errors.semError(cd.superClass, "Super-class not defined: %s", superName);
+                        }
+                    }
                 }
             }
 
@@ -103,11 +124,6 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
         return null;
     }
 
-    private boolean isValidSuperclass(String superName) {
-        if ("object".equals(superName)) return true;
-        if ("int".equals(superName) || "bool".equals(superName) || "str".equals(superName)) return false;
-        return hierarchy.classExists(superName);
-    }
 
     private void checkTopLevelReturn(Stmt stmt) {
         if (stmt instanceof ReturnStmt) errors.semError(stmt, "Return statement cannot appear at the top level");
@@ -139,6 +155,23 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
 
         SymbolTable<Type> outerSym = sym;
         sym = new SymbolTable<>(sym);
+
+        if (superName.equals("int") || superName.equals("bool") || superName.equals("str")) {
+            // 情况 1：继承了不能继承的特殊/基础类型
+            errors.semError(classDef.superClass, "Cannot extend special class: %s", superName);
+        } else if (!superName.equals("object") && !hierarchy.classExists(superName)) {
+            // 去全局符号表里查一下这个名字到底是个啥
+            Type t = sym.get(superName);
+
+            // 如果它在符号表里，但它不是一个类（比如是个普通变量、函数）
+            if (t != null && !(t instanceof ClassValueType)) {
+                // 情况 2：试图继承一个变量或函数
+                errors.semError(classDef.superClass, "Super-class must be a class: %s", superName);
+            } else {
+                // 情况 3：根本没定义这个类，或者这个类因为自身语法错误被解析器扬了
+                errors.semError(classDef.superClass, "Super-class not defined: %s", superName);
+            }
+        }
 
         for (Declaration decl : classDef.declarations) {
             Identifier id = decl.getIdentifier();
@@ -174,7 +207,7 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
                 FuncType  funcType = new FuncType(paramTypes, retType);
 
                 if (fd.params.isEmpty()) {
-                    errors.semError(fd.name, "Method must have at least one parameter");
+                    errors.semError(fd.name, "First parameter of the following method must be of the enclosing class: %s", fd.name.name);
                 } else {
                     TypedVar first = fd.params.get(0);
                     String firstTypeName = first.type instanceof ClassType ? ((ClassType) first.type).className : null;
@@ -345,7 +378,15 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
         if (annotation == null) return;
         if (annotation instanceof ClassType) {
             String cn = ((ClassType) annotation).className;
-            if (!hierarchy.classExists(cn)) errors.semError(annotation, "Invalid type annotation; there is no class named: %s", cn);
+
+            // 👇 新增逻辑：如果是内部类型，直接放行，不要去 hierarchy 里查！
+            if (cn.equals("<None>") || cn.equals("<Empty>")) {
+                return;
+            }
+
+            if (!hierarchy.classExists(cn)) {
+                errors.semError(annotation, "Invalid type annotation; there is no class named: %s", cn);
+            }
         } else if (annotation instanceof ListType) {
             checkTypeAnnotation(((ListType) annotation).elementType);
         }
@@ -405,5 +446,21 @@ public class DeclarationAnalyzer extends AbstractNodeAnalyzer<Type> {
             for (Stmt stmt : s.body) stmt.dispatch(this);
         }
         return null;
+    }
+
+    private boolean isSuperClassValid(Program program, String superName, Set<String> visited) {
+        if (superName.equals("object")) return true;
+        if (superName.equals("int") || superName.equals("bool") || superName.equals("str")) return false;
+
+        // 防死循环 (例如 class A(B):... class B(A):...)
+        if (!visited.add(superName)) return false;
+
+        // 在顶层声明中查找这个父类，如果找到了，继续递归检查它的父类是否合法
+        for (Declaration d : program.declarations) {
+            if (d instanceof ClassDef && d.getIdentifier().name.equals(superName)) {
+                return isSuperClassValid(program, ((ClassDef) d).superClass.name, visited);
+            }
+        }
+        return false; // 根本没找到这个类，或者它不合法
     }
 }
